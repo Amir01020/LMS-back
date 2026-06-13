@@ -1,0 +1,94 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_NAME:-school_lms}
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-root}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:${DB_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres} -d ${DB_NAME:-school_lms}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - .env.docker
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      DB_DIALECT: postgres
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: ${DB_NAME:-school_lms}
+      DB_USER: ${DB_USER:-postgres}
+      DB_PASSWORD: ${DB_PASSWORD:-root}
+      DB_SSL: "false"
+      DB_FORCE_SYNC: "false"
+      DB_ALTER_SYNC: "true"
+      UPLOAD_PATH: ./uploads
+      CORS_ORIGIN: ${CORS_ORIGIN:-https://bit-system.uz}
+      API_BASE_URL: ${API_BASE_URL:-https://api.bit-system.uz}
+    volumes:
+      - uploads_data:/app/uploads
+    ports:
+      - "127.0.0.1:${API_PORT:-3000}:3000"
+
+  # docker compose --profile seed run --rm seed
+  seed:
+    profiles: ["seed"]
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - .env.docker
+    environment:
+      NODE_ENV: production
+      DB_DIALECT: postgres
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: ${DB_NAME:-school_lms}
+      DB_USER: ${DB_USER:-postgres}
+      DB_PASSWORD: ${DB_PASSWORD:-root}
+      DB_SSL: "false"
+      DB_ALTER_SYNC: "true"
+    entrypoint: ["./docker-entrypoint.sh"]
+    command: ["sh", "-c", "node scripts/seedSuperAdmin.js && node scripts/seedTestData.js"]
+    restart: "no"
+
+  seed-superadmin:
+    profiles: ["seed-superadmin"]
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - .env.docker
+    environment:
+      NODE_ENV: production
+      DB_DIALECT: postgres
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: ${DB_NAME:-school_lms}
+      DB_USER: ${DB_USER:-postgres}
+      DB_PASSWORD: ${DB_PASSWORD:-root}
+      DB_SSL: "false"
+      DB_ALTER_SYNC: "true"
+    entrypoint: ["./docker-entrypoint.sh"]
+    command: ["node", "scripts/seedSuperAdmin.js"]
+    restart: "no"
+
+volumes:
+  postgres_data:
+  uploads_data:
