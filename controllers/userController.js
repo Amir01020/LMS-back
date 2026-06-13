@@ -1,5 +1,9 @@
+const path = require('path');
+const fs = require('fs');
 const { Op } = require('sequelize');
 const AuthService = require('../services/authService');
+const { buildAvatarUrl, avatarFilenameFromUrl } = require('../utils/avatarUrl');
+const { AVATAR_DIR } = require('../middleware/uploadAvatar');
 const PointsService = require('../services/pointsService');
 const UserRoleService = require('../services/userRoleService');
 const {
@@ -9,9 +13,52 @@ const { USER_ROLES, HTTP_STATUS } = require('../utils/constants');
 const { sendSuccess, sendError } = require('../utils/response');
 
 class UserController {
+  static parseIdList(value) {
+    if (!value) return [];
+    const raw = Array.isArray(value) ? value : String(value).split(',');
+    return [...new Set(raw.map((id) => parseInt(id, 10)).filter((id) => Number.isFinite(id)))];
+  }
+
+  static buildStudentGroupsInclude(req, { groupIds, mentorIds, directionIds }) {
+    const groupWhere = {};
+
+    if (UserRoleService.isManager(req.user) && req.user.branchId) {
+      groupWhere.branch_id = req.user.branchId;
+    }
+    if (groupIds.length) groupWhere.id = { [Op.in]: groupIds };
+    if (directionIds.length) groupWhere.direction_id = { [Op.in]: directionIds };
+
+    const nestedIncludes = [
+      { model: Direction, as: 'direction', attributes: ['id', 'name'] },
+      { model: Branch, as: 'branch', attributes: ['id', 'name'] }
+    ];
+
+    nestedIncludes.push({
+      model: User,
+      as: 'mentors',
+      where: mentorIds.length ? { id: { [Op.in]: mentorIds } } : undefined,
+      required: mentorIds.length > 0,
+      attributes: ['id', 'name']
+    });
+
+    const isManagerStudentScope = UserRoleService.isManager(req.user) && req.user.branchId;
+    const hasFilter = groupIds.length || mentorIds.length || directionIds.length;
+
+    return {
+      model: Group,
+      as: 'studentGroups',
+      where: Object.keys(groupWhere).length ? groupWhere : undefined,
+      required: isManagerStudentScope || hasFilter,
+      attributes: ['id', 'name', 'branch_id'],
+      include: nestedIncludes
+    };
+  }
+
   static async list(req, res) {
     try {
-      const { role, group_id, search, branch_id, page = 1, limit = 20 } = req.query;
+      const {
+        role, group_id, mentor_id, direction_id, search, branch_id, page = 1, limit = 20
+      } = req.query;
       const where = { is_active: true };
 
       if (role) where.role = role;
@@ -39,32 +86,25 @@ class UserController {
 
       const include = [{ model: Branch, as: 'branch', attributes: ['id', 'name'] }];
 
-      if (group_id) {
+      const groupIds = UserController.parseIdList(group_id);
+      const mentorIds = UserController.parseIdList(mentor_id);
+      const directionIds = UserController.parseIdList(direction_id);
+
+      if (role === USER_ROLES.STUDENT) {
+        include.push(UserController.buildStudentGroupsInclude(req, { groupIds, mentorIds, directionIds }));
+      } else if (groupIds.length === 1) {
         include.push({
           model: Group,
-          as: role === USER_ROLES.STUDENT ? 'studentGroups' : 'mentorGroups',
-          where: { id: group_id },
+          as: 'mentorGroups',
+          where: { id: groupIds[0] },
           required: true
         });
-      } else if (UserRoleService.isManager(req.user) && req.user.branchId && role === USER_ROLES.STUDENT) {
+      } else if (groupIds.length > 1) {
         include.push({
           model: Group,
-          as: 'studentGroups',
-          where: { branch_id: req.user.branchId },
-          required: true,
-          attributes: ['id', 'name', 'branch_id'],
-          include: [{ model: Direction, as: 'direction', attributes: ['id', 'name'] }]
-        });
-      } else if (role === USER_ROLES.STUDENT) {
-        include.push({
-          model: Group,
-          as: 'studentGroups',
-          required: false,
-          attributes: ['id', 'name', 'branch_id'],
-          include: [
-            { model: Direction, as: 'direction', attributes: ['id', 'name'] },
-            { model: Branch, as: 'branch', attributes: ['id', 'name'] }
-          ]
+          as: 'mentorGroups',
+          where: { id: { [Op.in]: groupIds } },
+          required: true
         });
       }
 
@@ -226,6 +266,51 @@ class UserController {
       });
 
       return sendSuccess(res, { user: updated }, 'Пользователь обновлен');
+    } catch (error) {
+      return sendError(res, error.message, HTTP_STATUS.BAD_REQUEST);
+    }
+  }
+
+  static async uploadAvatar(req, res) {
+    try {
+      if (!req.file) {
+        return sendError(res, 'Файл аватара обязателен (поле avatar)', HTTP_STATUS.BAD_REQUEST);
+      }
+
+      const user = await User.findByPk(req.params.id);
+      if (!user) return sendError(res, 'Пользователь не найден', HTTP_STATUS.NOT_FOUND);
+
+      const isSelf = req.user.userId === user.id;
+      if (!isSelf && !UserRoleService.isSuperAdmin(req.user) && !UserRoleService.isManager(req.user)) {
+        return sendError(res, 'Доступ запрещен', HTTP_STATUS.FORBIDDEN);
+      }
+
+      if (UserRoleService.isManager(req.user) && !isSelf && req.user.branchId) {
+        if (user.role === USER_ROLES.STUDENT) {
+          const branchGroups = await Group.findAll({
+            where: { branch_id: req.user.branchId },
+            attributes: ['id']
+          });
+          const groupIds = branchGroups.map((g) => g.id);
+          const link = groupIds.length
+            ? await GroupStudent.findOne({ where: { user_id: user.id, group_id: groupIds } })
+            : null;
+          if (!link) return sendError(res, 'Доступ запрещен', HTTP_STATUS.FORBIDDEN);
+        } else if (user.branch_id !== req.user.branchId) {
+          return sendError(res, 'Доступ запрещен', HTTP_STATUS.FORBIDDEN);
+        }
+      }
+
+      const oldFilename = avatarFilenameFromUrl(user.avatar_url);
+      if (oldFilename && !oldFilename.startsWith('http')) {
+        const oldPath = path.join(AVATAR_DIR, oldFilename);
+        if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath);
+      }
+
+      const avatarUrl = buildAvatarUrl(req, req.file.filename);
+      await user.update({ avatar_url: avatarUrl });
+
+      return sendSuccess(res, { user: user.toJSON() }, 'Фото профиля обновлено');
     } catch (error) {
       return sendError(res, error.message, HTTP_STATUS.BAD_REQUEST);
     }

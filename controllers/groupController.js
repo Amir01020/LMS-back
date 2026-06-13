@@ -1,8 +1,9 @@
 const { Op } = require('sequelize');
 const {
-  Group, Direction, User, GroupStudent, GroupMentor
+  Group, Direction, User, GroupStudent, GroupMentor, Branch
 } = require('../models');
 const GroupAccessService = require('../services/groupAccessService');
+const StatsService = require('../services/statsService');
 const { USER_ROLES, HTTP_STATUS } = require('../utils/constants');
 const { sendSuccess, sendError } = require('../utils/response');
 
@@ -32,8 +33,8 @@ class GroupController {
         include: [
           { model: Direction, as: 'direction' },
           { model: Branch, as: 'branch', attributes: ['id', 'name'] },
-          { model: User, as: 'mentors', attributes: ['id', 'name', 'email', 'avatar_url'] },
-          { model: User, as: 'students', attributes: ['id', 'name', 'email', 'avatar_url'] }
+          { model: User, as: 'mentors', attributes: ['id', 'name', 'email', 'avatar_url', 'phone', 'role'] },
+          { model: User, as: 'students', attributes: ['id', 'name', 'email', 'avatar_url', 'phone', 'role'] }
         ],
         order: [['name', 'ASC']]
       });
@@ -94,8 +95,16 @@ class GroupController {
       const group = await Group.findByPk(req.params.id, {
         include: [
           { model: Direction, as: 'direction' },
-          { model: User, as: 'mentors' },
-          { model: User, as: 'students' }
+          {
+            model: User,
+            as: 'mentors',
+            attributes: ['id', 'name', 'email', 'avatar_url', 'phone', 'role']
+          },
+          {
+            model: User,
+            as: 'students',
+            attributes: ['id', 'name', 'email', 'avatar_url', 'phone', 'role']
+          }
         ]
       });
 
@@ -141,13 +150,50 @@ class GroupController {
     }
   }
 
+  static async getStats(req, res) {
+    try {
+      const canAccess = await GroupAccessService.canAccessGroup(req.user, req.params.id);
+      if (!canAccess) return sendError(res, 'Доступ запрещен', HTTP_STATUS.FORBIDDEN);
+
+      const stats = await StatsService.getGroupStats(req.params.id);
+      if (!stats) return sendError(res, 'Группа не найдена', HTTP_STATUS.NOT_FOUND);
+
+      return sendSuccess(res, stats);
+    } catch (error) {
+      return sendError(res, error.message, HTTP_STATUS.INTERNAL_SERVER_ERROR);
+    }
+  }
+
+  static async getMemberStats(req, res) {
+    try {
+      const { id: groupId, userId } = req.params;
+      const canAccess = await GroupAccessService.canAccessGroup(req.user, groupId);
+      if (!canAccess) return sendError(res, 'Доступ запрещен', HTTP_STATUS.FORBIDDEN);
+
+      if (req.user.role === USER_ROLES.STUDENT && Number(userId) !== req.user.userId) {
+        return sendError(res, 'Доступ запрещен', HTTP_STATUS.FORBIDDEN);
+      }
+
+      const stats = await StatsService.getMemberStats(groupId, Number(userId));
+      if (!stats) return sendError(res, 'Участник не найден в группе', HTTP_STATUS.NOT_FOUND);
+
+      return sendSuccess(res, { stats });
+    } catch (error) {
+      return sendError(res, error.message, HTTP_STATUS.INTERNAL_SERVER_ERROR);
+    }
+  }
+
   static async getStudents(req, res) {
     try {
       const canAccess = await GroupAccessService.canAccessGroup(req.user, req.params.id);
       if (!canAccess) return sendError(res, 'Доступ запрещен', HTTP_STATUS.FORBIDDEN);
 
       const group = await Group.findByPk(req.params.id, {
-        include: [{ model: User, as: 'students' }]
+        include: [{
+          model: User,
+          as: 'students',
+          attributes: ['id', 'name', 'email', 'avatar_url', 'phone', 'role']
+        }]
       });
       if (!group) return sendError(res, 'Группа не найдена', HTTP_STATUS.NOT_FOUND);
 

@@ -46,8 +46,16 @@ const migrateRoleToManager = async (dialect) => {
       await sequelize.query(`ALTER TYPE "enum_users_role" ADD VALUE 'manager'`);
       console.log('  + enum manager');
     }
-    await sequelize.query(`UPDATE users SET role = 'manager' WHERE role = 'admin'`);
-    console.log('  ~ admin -> manager');
+    const [adminEnum] = await sequelize.query(`
+      SELECT 1 FROM pg_enum e
+      JOIN pg_type t ON e.enumtypid = t.oid
+      WHERE t.typname = 'enum_users_role' AND e.enumlabel = 'admin'
+      LIMIT 1
+    `);
+    if (adminEnum.length) {
+      await sequelize.query(`UPDATE users SET role = 'manager' WHERE role::text = 'admin'`);
+      console.log('  ~ admin -> manager');
+    }
   } else if (dialect === 'mysql') {
     await sequelize.query(`
       ALTER TABLE users MODIFY COLUMN role

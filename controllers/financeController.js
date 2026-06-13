@@ -122,30 +122,43 @@ class FinanceController {
     }
   }
 
+  static parseListParam(value) {
+    if (!value) return [];
+    const raw = Array.isArray(value) ? value : String(value).split(',');
+    return [...new Set(raw.map((item) => String(item).trim()).filter(Boolean))];
+  }
+
   static async listEmployees(req, res) {
     try {
-      const { branch_id, role } = req.query;
+      const { branch_id, role, salary_min, salary_max } = req.query;
+      const branchIds = FinanceController.parseListParam(branch_id).map(Number).filter(Number.isFinite);
+      const roles = FinanceController.parseListParam(role);
       const where = { is_active: true };
 
-      if (role) {
-        where.role = role;
+      if (roles.length) {
+        where.role = { [Op.in]: roles };
       } else {
         where.role = STAFF_ROLES.filter((r) => r !== USER_ROLES.SUPER_ADMIN);
       }
 
-      if (branch_id) {
-        const links = await UserBranch.findAll({ where: { branch_id } });
-        const userIds = links.map((l) => l.user_id);
-        if (userIds.length) {
-          where[Op.or] = [{ branch_id }, { id: userIds }];
-        } else {
-          where.branch_id = branch_id;
-        }
+      if (branchIds.length) {
+        const links = await UserBranch.findAll({ where: { branch_id: { [Op.in]: branchIds } } });
+        const userIds = [...new Set(links.map((l) => l.user_id))];
+        const branchConditions = [{ branch_id: { [Op.in]: branchIds } }];
+        if (userIds.length) branchConditions.push({ id: { [Op.in]: userIds } });
+        where[Op.and] = [...(where[Op.and] || []), { [Op.or]: branchConditions }];
+      }
+
+      if (salary_min !== undefined && salary_min !== '') {
+        where.salary = { ...(where.salary || {}), [Op.gte]: parseFloat(salary_min) };
+      }
+      if (salary_max !== undefined && salary_max !== '') {
+        where.salary = { ...(where.salary || {}), [Op.lte]: parseFloat(salary_max) };
       }
 
       const employees = await User.findAll({
         where,
-        attributes: ['id', 'name', 'email', 'role', 'branch_id', 'salary'],
+        attributes: ['id', 'name', 'email', 'phone', 'role', 'branch_id', 'salary', 'avatar_url'],
         include: [
           { model: Branch, as: 'branch', attributes: ['id', 'name'] },
           { model: Branch, as: 'branches', attributes: ['id', 'name'], through: { attributes: [] } }
@@ -192,7 +205,7 @@ class FinanceController {
       }
 
       const refreshed = await User.findByPk(employee.id, {
-        attributes: ['id', 'name', 'email', 'role', 'branch_id', 'salary'],
+        attributes: ['id', 'name', 'email', 'phone', 'role', 'branch_id', 'salary', 'avatar_url'],
         include: [
           { model: Branch, as: 'branch', attributes: ['id', 'name'] },
           { model: Branch, as: 'branches', attributes: ['id', 'name'], through: { attributes: [] } }

@@ -7,7 +7,9 @@ const GroupAccessService = require('../services/groupAccessService');
 const NotificationService = require('../services/notificationService');
 const { NOTIFICATION_TYPES, USER_ROLES, HTTP_STATUS } = require('../utils/constants');
 const { sendSuccess, sendError } = require('../utils/response');
-const { getCurrentWeekRange, getTodayKey } = require('../utils/dateHelpers');
+const { getCurrentWeekRange, getTodayKey, isSunday } = require('../utils/dateHelpers');
+
+const SUNDAY_ERROR = 'Воскресенье — выходной день, уроки в этот день не проводятся';
 
 class LessonController {
   static async list(req, res) {
@@ -30,8 +32,8 @@ class LessonController {
       if (mentor_id) where.mentor_id = mentor_id;
 
       if (period === 'current_week') {
-        const { monday, sunday } = getCurrentWeekRange();
-        where.date = { [Op.between]: [monday, sunday] };
+        const { monday, saturday } = getCurrentWeekRange();
+        where.date = { [Op.between]: [monday, saturday] };
       } else if (period === 'past') {
         const { monday } = getCurrentWeekRange();
         where.date = { [Op.lt]: monday };
@@ -93,6 +95,10 @@ class LessonController {
 
       if (!group_id || !mentor_id || !title || !date || !start_time || !end_time) {
         return sendError(res, 'Обязательные поля: group_id, mentor_id, title, date, start_time, end_time', HTTP_STATUS.BAD_REQUEST);
+      }
+
+      if (isSunday(date)) {
+        return sendError(res, SUNDAY_ERROR, HTTP_STATUS.BAD_REQUEST);
       }
 
       const lesson = await Lesson.create({
@@ -160,6 +166,9 @@ class LessonController {
       if (!lesson) return sendError(res, 'Урок не найден', HTTP_STATUS.NOT_FOUND);
 
       const { date } = req.body;
+      if (date && isSunday(date)) {
+        return sendError(res, SUNDAY_ERROR, HTTP_STATUS.BAD_REQUEST);
+      }
       if (date && lesson.status === 'scheduled' && date < getTodayKey()) {
         return sendError(res, 'Нельзя перенести урок на прошедшую дату', HTTP_STATUS.BAD_REQUEST);
       }

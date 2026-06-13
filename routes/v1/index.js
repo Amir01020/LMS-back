@@ -14,6 +14,7 @@ router.use('/stats', require('./stats'));
 router.use('/notifications', require('./notifications'));
 router.use('/branches', require('./branches'));
 router.use('/finance', require('./finance'));
+router.use('/freeze-requests', require('./freezeRequests'));
 
 router.get('/health', (req, res) => {
   res.json({

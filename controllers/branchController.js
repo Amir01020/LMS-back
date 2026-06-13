@@ -121,11 +121,18 @@ class BranchController {
     }
   }
 
+  static parseIdList(value) {
+    if (!value) return [];
+    const raw = Array.isArray(value) ? value : String(value).split(',');
+    return [...new Set(raw.map((id) => parseInt(id, 10)).filter((id) => Number.isFinite(id)))];
+  }
+
   static async listStudents(req, res) {
     try {
       const { branch_id, search, page = 1, limit = 20 } = req.query;
+      const branchIds = BranchController.parseIdList(branch_id);
       const data = await BranchStatsService.listStudents({
-        branchId: branch_id ? parseInt(branch_id) : null,
+        branchIds,
         search,
         page: parseInt(page),
         limit: parseInt(limit)

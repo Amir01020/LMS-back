@@ -1,4 +1,9 @@
+const path = require('path');
+const fs = require('fs');
 const AuthService = require('../services/authService');
+const { User } = require('../models');
+const { buildAvatarUrl, avatarFilenameFromUrl } = require('../utils/avatarUrl');
+const { AVATAR_DIR } = require('../middleware/uploadAvatar');
 const { HTTP_STATUS, SUCCESS_MESSAGES } = require('../utils/constants');
 const { sendSuccess, sendError } = require('../utils/response');
 
@@ -95,6 +100,30 @@ class AuthController {
         avatar_url
       });
       return sendSuccess(res, { user }, 'Профиль обновлён');
+    } catch (error) {
+      return sendError(res, error.message, HTTP_STATUS.BAD_REQUEST);
+    }
+  }
+
+  static async uploadAvatar(req, res) {
+    try {
+      if (!req.file) {
+        return sendError(res, 'Файл аватара обязателен (поле avatar)', HTTP_STATUS.BAD_REQUEST);
+      }
+
+      const user = await User.findByPk(req.user.userId);
+      if (!user) return sendError(res, 'Пользователь не найден', HTTP_STATUS.NOT_FOUND);
+
+      const oldFilename = avatarFilenameFromUrl(user.avatar_url);
+      if (oldFilename && !oldFilename.startsWith('http')) {
+        const oldPath = path.join(AVATAR_DIR, oldFilename);
+        if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath);
+      }
+
+      const avatarUrl = buildAvatarUrl(req, req.file.filename);
+      await user.update({ avatar_url: avatarUrl });
+
+      return sendSuccess(res, { user: user.toJSON() }, 'Фото профиля обновлено');
     } catch (error) {
       return sendError(res, error.message, HTTP_STATUS.BAD_REQUEST);
     }

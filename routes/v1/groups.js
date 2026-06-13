@@ -12,6 +12,8 @@ router.post('/', requireManagerOnly, GroupController.create);
 router.get('/:id', GroupController.getById);
 router.patch('/:id', requireManagerOnly, GroupController.update);
 router.delete('/:id', requireManagerOnly, GroupController.remove);
+router.get('/:id/stats', GroupController.getStats);
+router.get('/:id/members/:userId/stats', GroupController.getMemberStats);
 router.get('/:id/students', GroupController.getStudents);
 router.post('/:id/students/:userId', requireManagerOnly, GroupController.addStudent);
 router.delete('/:id/students/:userId', requireManagerOnly, GroupController.removeStudent);

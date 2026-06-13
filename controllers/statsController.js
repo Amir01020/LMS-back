@@ -1,13 +1,16 @@
 const { Op } = require('sequelize');
 const { sequelize } = require('../models');
 const {
-  User, Group, GroupStudent, Lesson, Homework, HomeworkSubmission,
-  Attendance, MentorRating, Order, PointTransaction
+  User, Group, GroupStudent, Lesson, Homework, HomeworkSubmission, Order
 } = require('../models');
-const PointsService = require('../services/pointsService');
+const StatsService = require('../services/statsService');
+const BranchStatsService = require('../services/branchStatsService');
+const UserRoleService = require('../services/userRoleService');
 const GroupAccessService = require('../services/groupAccessService');
-const { USER_ROLES, SUBMISSION_STATUS, HTTP_STATUS } = require('../utils/constants');
+const { USER_ROLES, HTTP_STATUS } = require('../utils/constants');
 const { sendSuccess, sendError } = require('../utils/response');
+
+const USER_ATTRS = ['id', 'name', 'email', 'role', 'avatar_url'];
 
 class StatsController {
   static async studentStats(req, res) {
@@ -18,6 +21,8 @@ class StatsController {
       if (req.user.role === USER_ROLES.STUDENT) {
         studentIds = [req.user.userId];
       } else if (group_id) {
+        const canAccess = await GroupAccessService.canAccessGroup(req.user, group_id);
+        if (!canAccess) return sendError(res, 'Доступ запрещен', HTTP_STATUS.FORBIDDEN);
         const links = await GroupStudent.findAll({ where: { group_id } });
         studentIds = links.map((l) => l.user_id);
       } else if (req.user.role === USER_ROLES.MENTOR) {
@@ -29,40 +34,16 @@ class StatsController {
         studentIds = students.map((s) => s.id);
       }
 
-      const stats = await Promise.all(studentIds.map(async (studentId) => {
-        const student = await User.findByPk(studentId, { attributes: ['id', 'name', 'email'] });
-        const submissions = await HomeworkSubmission.findAll({ where: { student_id: studentId } });
-        const reviewed = submissions.filter((s) => s.status === SUBMISSION_STATUS.REVIEWED);
-        const points = await PointsService.getBalance(studentId);
-        const attendances = await Attendance.findAll({ where: { student_id: studentId } });
-        const present = attendances.filter((a) => a.is_present).length;
+      const stats = await Promise.all(
+        studentIds.map((id) => StatsService.getStudentStats(id, group_id ? Number(group_id) : null))
+      );
 
-        const reviews = await HomeworkSubmission.findAll({
-          where: { student_id: studentId, status: SUBMISSION_STATUS.REVIEWED },
-          include: [{ model: require('../models').SubmissionReview, as: 'reviews' }]
-        });
+      const result = stats
+        .filter(Boolean)
+        .sort((a, b) => b.performanceScore - a.performanceScore)
+        .map((s, i) => ({ ...s, rank: i + 1 }));
 
-        let avgScore = 0;
-        const scores = [];
-        for (const sub of reviews) {
-          if (sub.reviews?.length) scores.push(sub.reviews[0].score);
-        }
-        if (scores.length) avgScore = scores.reduce((a, b) => a + b, 0) / scores.length;
-
-        return {
-          student,
-          submissionsTotal: submissions.length,
-          submissionsReviewed: reviewed.length,
-          averageScore: Math.round(avgScore * 100) / 100,
-          points,
-          attendanceRate: attendances.length
-            ? Math.round((present / attendances.length) * 100)
-            : 0
-        };
-      }));
-
-      stats.sort((a, b) => b.points - a.points);
-      return sendSuccess(res, { stats });
+      return sendSuccess(res, { stats: result });
     } catch (error) {
       return sendError(res, error.message, HTTP_STATUS.INTERNAL_SERVER_ERROR);
     }
@@ -70,65 +51,217 @@ class StatsController {
 
   static async mentorStats(req, res) {
     try {
+      const { group_id } = req.query;
       const where = { role: USER_ROLES.MENTOR, is_active: true };
 
       if (req.user.role === USER_ROLES.MENTOR) {
         where.id = req.user.userId;
+      } else if (group_id) {
+        const canAccess = await GroupAccessService.canAccessGroup(req.user, group_id);
+        if (!canAccess) return sendError(res, 'Доступ запрещен', HTTP_STATUS.FORBIDDEN);
+        const group = await Group.findByPk(group_id, {
+          include: [{ model: User, as: 'mentors', attributes: ['id'] }]
+        });
+        const mentorIds = group?.mentors?.map((m) => m.id) || [];
+        where.id = mentorIds.length ? { [Op.in]: mentorIds } : -1;
       }
 
-      const mentors = await User.findAll({ where, attributes: ['id', 'name', 'email'] });
+      const mentors = await User.findAll({ where, attributes: USER_ATTRS });
 
-      const stats = await Promise.all(mentors.map(async (mentor) => {
-        const ratings = await MentorRating.findAll({ where: { mentor_id: mentor.id } });
-        const avg = ratings.length
-          ? ratings.reduce((s, r) => s + r.stars, 0) / ratings.length
-          : 0;
-        const highRatings = ratings.filter((r) => r.stars >= 4).length;
+      const stats = await Promise.all(
+        mentors.map((m) => StatsService.getMentorStats(m.id, group_id ? Number(group_id) : null))
+      );
 
-        return {
-          mentor,
-          ratingsCount: ratings.length,
-          averageRating: Math.round(avg * 100) / 100,
-          highRatingsCount: highRatings
-        };
-      }));
+      const result = stats
+        .filter(Boolean)
+        .sort((a, b) => b.averageRating - a.averageRating);
 
-      stats.sort((a, b) => b.averageRating - a.averageRating);
+      return sendSuccess(res, { stats: result });
+    } catch (error) {
+      return sendError(res, error.message, HTTP_STATUS.INTERNAL_SERVER_ERROR);
+    }
+  }
+
+  static async groupStats(req, res) {
+    try {
+      const { id: groupId } = req.params;
+      const canAccess = await GroupAccessService.canAccessGroup(req.user, groupId);
+      if (!canAccess) return sendError(res, 'Доступ запрещен', HTTP_STATUS.FORBIDDEN);
+
+      const stats = await StatsService.getGroupStats(groupId);
+      if (!stats) return sendError(res, 'Группа не найдена', HTTP_STATUS.NOT_FOUND);
+
+      return sendSuccess(res, stats);
+    } catch (error) {
+      return sendError(res, error.message, HTTP_STATUS.INTERNAL_SERVER_ERROR);
+    }
+  }
+
+  static async memberStats(req, res) {
+    try {
+      const { id: groupId, userId } = req.params;
+      const canAccess = await GroupAccessService.canAccessGroup(req.user, groupId);
+      if (!canAccess) return sendError(res, 'Доступ запрещен', HTTP_STATUS.FORBIDDEN);
+
+      if (req.user.role === USER_ROLES.STUDENT && Number(userId) !== req.user.userId) {
+        return sendError(res, 'Доступ запрещен', HTTP_STATUS.FORBIDDEN);
+      }
+
+      const stats = await StatsService.getMemberStats(groupId, Number(userId));
+      if (!stats) return sendError(res, 'Участник не найден в группе', HTTP_STATUS.NOT_FOUND);
+
       return sendSuccess(res, { stats });
     } catch (error) {
       return sendError(res, error.message, HTTP_STATUS.INTERNAL_SERVER_ERROR);
     }
   }
 
+  static async staffRankings(req, res) {
+    try {
+      const { branch_id } = req.query;
+      let branchId = branch_id ? Number(branch_id) : null;
+
+      if (req.user.role === USER_ROLES.MENTOR || req.user.role === USER_ROLES.SUPPORT) {
+        branchId = req.user.branchId || null;
+      } else if (req.user.role === USER_ROLES.MANAGER && req.user.branchId) {
+        branchId = req.user.branchId;
+      }
+
+      const stats = await StatsService.getStaffRankings(branchId);
+      return sendSuccess(res, { stats });
+    } catch (error) {
+      return sendError(res, error.message, HTTP_STATUS.INTERNAL_SERVER_ERROR);
+    }
+  }
+
+  static async studentRankings(req, res) {
+    try {
+      const userId = req.user.role === USER_ROLES.STUDENT
+        ? req.user.userId
+        : Number(req.query.user_id);
+
+      if (!userId) {
+        return sendError(res, 'user_id обязателен', HTTP_STATUS.BAD_REQUEST);
+      }
+
+      if (req.user.role === USER_ROLES.STUDENT && userId !== req.user.userId) {
+        return sendError(res, 'Доступ запрещен', HTTP_STATUS.FORBIDDEN);
+      }
+
+      const data = await StatsService.getStudentRankings(userId);
+      if (!data) return sendError(res, 'Студент не найден', HTTP_STATUS.NOT_FOUND);
+
+      return sendSuccess(res, data);
+    } catch (error) {
+      return sendError(res, error.message, HTTP_STATUS.INTERNAL_SERVER_ERROR);
+    }
+  }
+
+  static async getBranchOverviewCounts(branchId) {
+    const groupIds = await BranchStatsService.getBranchGroupIds(branchId);
+    if (!groupIds.length) {
+      return {
+        activeStudents: 0,
+        activeGroups: 0,
+        lessonsCount: 0,
+        homeworksCount: 0,
+        submissionsCount: 0,
+        shopPointsSpent: 0
+      };
+    }
+
+    const studentRows = await GroupStudent.findAll({
+      where: { group_id: groupIds },
+      attributes: ['user_id'],
+      group: ['user_id']
+    });
+    const studentIds = studentRows.map((row) => row.user_id);
+
+    const [
+      activeStudents,
+      activeGroups,
+      lessonsCount,
+      homeworksCount,
+      submissionsCount,
+      ordersSpent
+    ] = await Promise.all([
+      studentIds.length
+        ? User.count({ where: { id: studentIds, role: USER_ROLES.STUDENT, is_active: true } })
+        : 0,
+      Group.count({ where: { id: groupIds, status: 'active' } }),
+      Lesson.count({ where: { group_id: groupIds } }),
+      Homework.count({ where: { group_id: groupIds, status: 'published' } }),
+      studentIds.length
+        ? HomeworkSubmission.count({ where: { student_id: studentIds } })
+        : 0,
+      studentIds.length
+        ? Order.sum('total_price', { where: { student_id: studentIds } })
+        : 0
+    ]);
+
+    return {
+      activeStudents,
+      activeGroups,
+      lessonsCount,
+      homeworksCount,
+      submissionsCount,
+      shopPointsSpent: parseFloat(ordersSpent) || 0
+    };
+  }
+
   static async overview(req, res) {
     try {
-      const activeStudents = await User.count({ where: { role: USER_ROLES.STUDENT, is_active: true } });
-      const activeGroups = await Group.count({ where: { status: 'active' } });
-      const lessonsCount = await Lesson.count();
-      const homeworksCount = await Homework.count({ where: { status: 'published' } });
-      const submissionsCount = await HomeworkSubmission.count();
-      const ordersSpent = await Order.sum('total_price') || 0;
+      let stats;
 
-      const popularItems = await Order.findAll({
-        attributes: [
-          'item_id',
-          [sequelize.fn('COUNT', sequelize.col('Order.id')), 'orderCount'],
-          [sequelize.fn('SUM', sequelize.col('total_price')), 'totalSpent']
-        ],
-        group: ['item_id'],
-        order: [[sequelize.literal('orderCount'), 'DESC']],
-        limit: 5,
-        raw: true
-      });
+      if (UserRoleService.isManager(req.user) && req.user.branchId) {
+        stats = await StatsController.getBranchOverviewCounts(req.user.branchId);
+      } else {
+        const [
+          activeStudents,
+          activeGroups,
+          lessonsCount,
+          homeworksCount,
+          submissionsCount,
+          ordersSpent
+        ] = await Promise.all([
+          User.count({ where: { role: USER_ROLES.STUDENT, is_active: true } }),
+          Group.count({ where: { status: 'active' } }),
+          Lesson.count(),
+          Homework.count({ where: { status: 'published' } }),
+          HomeworkSubmission.count(),
+          Order.sum('total_price')
+        ]);
+
+        stats = {
+          activeStudents,
+          activeGroups,
+          lessonsCount,
+          homeworksCount,
+          submissionsCount,
+          shopPointsSpent: parseFloat(ordersSpent) || 0
+        };
+      }
+
+      return sendSuccess(res, stats);
+    } catch (error) {
+      return sendError(res, error.message, HTTP_STATUS.INTERNAL_SERVER_ERROR);
+    }
+  }
+
+  static async branchesComparison(req, res) {
+    try {
+      const { period = 'month' } = req.query;
+      const branchesStats = await BranchStatsService.getAllBranchesStats(period);
 
       return sendSuccess(res, {
-        activeStudents,
-        activeGroups,
-        lessonsCount,
-        homeworksCount,
-        submissionsCount,
-        shopPointsSpent: ordersSpent,
-        popularItems
+        period,
+        branches: branchesStats.map(({ branch, stats }) => ({
+          branchId: branch.id,
+          branchName: branch.name,
+          newStudents: stats.newStudents,
+          lostStudents: stats.lostStudents,
+          frozenStudents: stats.frozenStudents
+        }))
       });
     } catch (error) {
       return sendError(res, error.message, HTTP_STATUS.INTERNAL_SERVER_ERROR);

@@ -10,6 +10,11 @@
         "migrate:undo": "npx sequelize-cli db:migrate:undo",
         "seed": "npx sequelize-cli db:seed:all",
         "seed:superadmin": "node scripts/seedSuperAdmin.js",
+        "db:reset": "node scripts/resetDatabase.js",
+        "seed:demo": "node scripts/seedTestData.js",
+        "db:reset:seed": "node scripts/resetDatabase.js && node scripts/seedTestData.js",
+        "seed:test": "node scripts/seedTestData.js",
+        "seed:test:force": "node scripts/resetDatabase.js && node scripts/seedTestData.js",
         "migrate:superadmin": "node scripts/migrateSuperAdmin.js",
         "seed:undo": "npx sequelize-cli db:seed:undo:all",
         "test": "jest"

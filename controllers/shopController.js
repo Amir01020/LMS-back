@@ -1,7 +1,12 @@
+const path = require('path');
+const fs = require('fs');
 const {
   ShopItem, Order, User, BranchShopItem, Branch
 } = require('../models');
 const { Op } = require('sequelize');
+const { buildShopImageUrl, shopImageFilenameFromUrl } = require('../utils/shopImageUrl');
+const { normalizeMediaUrl } = require('../utils/mediaUrl');
+const { SHOP_IMAGE_DIR } = require('../middleware/uploadShopImage');
 const PointsService = require('../services/pointsService');
 const NotificationService = require('../services/notificationService');
 const BranchAccessService = require('../services/branchAccessService');
@@ -11,6 +16,14 @@ const {
 const { sendSuccess, sendError } = require('../utils/response');
 
 class ShopController {
+  static mapItem(item) {
+    const json = item.toJSON ? item.toJSON() : item;
+    return {
+      ...json,
+      image_url: normalizeMediaUrl(json.image_url)
+    };
+  }
+
   static async listItems(req, res) {
     try {
       if (req.user.role === USER_ROLES.STUDENT) {
@@ -25,7 +38,7 @@ class ShopController {
         });
 
         const items = allocations.map((row) => ({
-          ...row.item.toJSON(),
+          ...ShopController.mapItem(row.item),
           branchStock: row.quantity,
           allocationId: row.id
         }));
@@ -35,7 +48,7 @@ class ShopController {
 
       if (req.user.role === USER_ROLES.SUPER_ADMIN) {
         const items = await ShopItem.findAll({ order: [['name', 'ASC']] });
-        return sendSuccess(res, { items });
+        return sendSuccess(res, { items: items.map(ShopController.mapItem) });
       }
 
       const branchIds = req.user.branchIds?.length
@@ -52,7 +65,7 @@ class ShopController {
       });
 
       const items = allocations.map((row) => ({
-        ...row.item.toJSON(),
+        ...ShopController.mapItem(row.item),
         branchStock: row.quantity,
         branch_id: row.branch_id
       }));
@@ -66,7 +79,7 @@ class ShopController {
   static async createItem(req, res) {
     try {
       const item = await ShopItem.create(req.body);
-      return sendSuccess(res, { item }, 'Товар создан', HTTP_STATUS.CREATED);
+      return sendSuccess(res, { item: ShopController.mapItem(item) }, 'Товар создан', HTTP_STATUS.CREATED);
     } catch (error) {
       return sendError(res, error.message, HTTP_STATUS.BAD_REQUEST);
     }
@@ -77,7 +90,7 @@ class ShopController {
       const item = await ShopItem.findByPk(req.params.id);
       if (!item) return sendError(res, 'Товар не найден', HTTP_STATUS.NOT_FOUND);
       await item.update(req.body);
-      return sendSuccess(res, { item }, 'Товар обновлен');
+      return sendSuccess(res, { item: ShopController.mapItem(item) }, 'Товар обновлен');
     } catch (error) {
       return sendError(res, error.message, HTTP_STATUS.BAD_REQUEST);
     }
@@ -89,6 +102,30 @@ class ShopController {
       if (!item) return sendError(res, 'Товар не найден', HTTP_STATUS.NOT_FOUND);
       await item.destroy();
       return sendSuccess(res, null, 'Товар удален');
+    } catch (error) {
+      return sendError(res, error.message, HTTP_STATUS.BAD_REQUEST);
+    }
+  }
+
+  static async uploadItemImage(req, res) {
+    try {
+      if (!req.file) {
+        return sendError(res, 'Файл изображения обязателен (поле image)', HTTP_STATUS.BAD_REQUEST);
+      }
+
+      const item = await ShopItem.findByPk(req.params.id);
+      if (!item) return sendError(res, 'Товар не найден', HTTP_STATUS.NOT_FOUND);
+
+      const oldFilename = shopImageFilenameFromUrl(item.image_url);
+      if (oldFilename && !oldFilename.startsWith('http')) {
+        const oldPath = path.join(SHOP_IMAGE_DIR, oldFilename);
+        if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath);
+      }
+
+      const imageUrl = buildShopImageUrl(req, req.file.filename);
+      await item.update({ image_url: imageUrl });
+
+      return sendSuccess(res, { item: ShopController.mapItem(item) }, 'Фото товара обновлено');
     } catch (error) {
       return sendError(res, error.message, HTTP_STATUS.BAD_REQUEST);
     }

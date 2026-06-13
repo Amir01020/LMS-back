@@ -29,6 +29,7 @@ const BranchIncome = require('./BranchIncome');
 const SalaryPayment = require('./SalaryPayment');
 const BranchShopItem = require('./BranchShopItem');
 const UserBranch = require('./UserBranch');
+const StudentFreezeRequest = require('./StudentFreezeRequest');
 
 const models = {
   User,
@@ -59,7 +60,8 @@ const models = {
   BranchIncome,
   SalaryPayment,
   BranchShopItem,
-  UserBranch
+  UserBranch,
+  StudentFreezeRequest
 };
 
 const setupAssociations = () => {
@@ -213,6 +215,13 @@ const setupAssociations = () => {
 
   Order.belongsTo(Branch, { foreignKey: 'branch_id', as: 'branch' });
   Branch.hasMany(Order, { foreignKey: 'branch_id', as: 'orders' });
+
+  User.hasMany(StudentFreezeRequest, { foreignKey: 'student_id', as: 'freezeRequests' });
+  StudentFreezeRequest.belongsTo(User, { foreignKey: 'student_id', as: 'student' });
+  StudentFreezeRequest.belongsTo(Group, { foreignKey: 'group_id', as: 'group' });
+  StudentFreezeRequest.belongsTo(Branch, { foreignKey: 'branch_id', as: 'branch' });
+  User.hasMany(StudentFreezeRequest, { foreignKey: 'reviewed_by', as: 'reviewedFreezeRequests' });
+  StudentFreezeRequest.belongsTo(User, { foreignKey: 'reviewed_by', as: 'reviewer' });
 };
 
 setupAssociations();

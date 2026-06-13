@@ -2,7 +2,7 @@ const { Op } = require('sequelize');
 const {
   User, Group, GroupStudent, BranchBudget, BranchIncome, SalaryPayment
 } = require('../models');
-const { USER_ROLES } = require('../utils/constants');
+const { USER_ROLES, ENROLLMENT_STATUS } = require('../utils/constants');
 const { getPeriodStartDate, getCurrentYearMonth } = require('../utils/dateHelpers');
 
 class BranchStatsService {
@@ -18,10 +18,8 @@ class BranchStatsService {
     const groupIds = await this.getBranchGroupIds(branchId);
     if (!groupIds.length) return 0;
 
-    const where = {
-      group_id: groupIds,
-      joined_at: { [Op.gte]: sinceDate }
-    };
+    const where = { group_id: groupIds };
+    if (sinceDate) where.joined_at = { [Op.gte]: sinceDate };
 
     const rows = await GroupStudent.findAll({
       where,
@@ -77,6 +75,22 @@ class BranchStatsService {
     return counts;
   }
 
+  static async countFrozenStudents(branchId, sinceDate) {
+    const groupIds = await this.getBranchGroupIds(branchId);
+    if (!groupIds.length) return 0;
+    const where = { group_id: groupIds, status: ENROLLMENT_STATUS.FROZEN };
+    if (sinceDate) where.frozen_at = { [Op.gte]: sinceDate };
+    return GroupStudent.count({ where });
+  }
+
+  static async countLostStudents(branchId, sinceDate) {
+    const groupIds = await this.getBranchGroupIds(branchId);
+    if (!groupIds.length) return 0;
+    const where = { group_id: groupIds, status: ENROLLMENT_STATUS.LEFT };
+    if (sinceDate) where.left_at = { [Op.gte]: sinceDate };
+    return GroupStudent.count({ where });
+  }
+
   static async getBranchStats(branchId, period = 'month') {
     const sinceDate = getPeriodStartDate(period);
     const { year, month } = getCurrentYearMonth();
@@ -84,12 +98,16 @@ class BranchStatsService {
     const [
       newStudents,
       activeStudents,
+      frozenStudents,
+      lostStudents,
       income,
       currentBudget,
       staffCounts
     ] = await Promise.all([
       this.countNewStudents(branchId, sinceDate),
       this.countActiveStudents(branchId),
+      this.countFrozenStudents(branchId, sinceDate),
+      this.countLostStudents(branchId, sinceDate),
       this.sumIncome(branchId, sinceDate),
       this.getCurrentBudget(branchId),
       this.getStaffCounts(branchId)
@@ -113,6 +131,8 @@ class BranchStatsService {
       sinceDate,
       newStudents,
       activeStudents,
+      frozenStudents,
+      lostStudents,
       income,
       currentBudget,
       staffCounts,
@@ -132,9 +152,13 @@ class BranchStatsService {
     return stats;
   }
 
-  static async listStudents({ branchId, search, page = 1, limit = 20 }) {
+  static async listStudents({ branchId, branchIds, search, page = 1, limit = 20 }) {
     const { Op } = require('sequelize');
     const { User, Group, Direction, Branch } = require('../models');
+
+    const resolvedBranchIds = branchIds?.length
+      ? branchIds
+      : (branchId ? [branchId] : []);
 
     const where = { role: USER_ROLES.STUDENT, is_active: true };
     if (search) {
@@ -147,7 +171,7 @@ class BranchStatsService {
     const groupInclude = {
       model: Group,
       as: 'studentGroups',
-      required: !!branchId,
+      required: resolvedBranchIds.length > 0,
       attributes: ['id', 'name', 'branch_id'],
       include: [
         { model: Branch, as: 'branch', attributes: ['id', 'name'] },
@@ -155,8 +179,8 @@ class BranchStatsService {
       ]
     };
 
-    if (branchId) {
-      groupInclude.where = { branch_id: branchId };
+    if (resolvedBranchIds.length) {
+      groupInclude.where = { branch_id: { [Op.in]: resolvedBranchIds } };
     }
 
     const offset = (page - 1) * limit;

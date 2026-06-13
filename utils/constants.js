@@ -32,6 +32,18 @@ const GROUP_STATUS = {
   PAUSED: 'paused'
 };
 
+const ENROLLMENT_STATUS = {
+  ACTIVE: 'active',
+  FROZEN: 'frozen',
+  LEFT: 'left'
+};
+
+const FREEZE_REQUEST_STATUS = {
+  PENDING: 'pending',
+  APPROVED: 'approved',
+  REJECTED: 'rejected'
+};
+
 const LESSON_TYPE = {
   ONLINE: 'online',
   OFFLINE: 'offline'
@@ -136,6 +148,8 @@ module.exports = {
   ROLES_CREATABLE_BY_MANAGER,
   ROLES_CREATABLE_BY_SUPER_ADMIN,
   GROUP_STATUS,
+  ENROLLMENT_STATUS,
+  FREEZE_REQUEST_STATUS,
   LESSON_TYPE,
   LESSON_STATUS,
   RECURRENCE_PATTERN,
